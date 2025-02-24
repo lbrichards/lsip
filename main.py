@@ -28,11 +28,12 @@ MAC_PREFIXES = {
 
 class MDNSListener(ServiceListener):
     def __init__(self):
-        self.ip_to_info = {}  # Store both name and service type
+        self.ip_to_info = {}
+        self.errors = set()  # Track unique errors
 
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         try:
-            info = zc.get_service_info(type_, name, timeout=3000)
+            info = zc.get_service_info(type_, name, timeout=1000)  # Reduced timeout
             if info and info.addresses:
                 for addr in info.addresses:
                     ip_addr = socket.inet_ntoa(addr)
@@ -44,7 +45,11 @@ class MDNSListener(ServiceListener):
                         }
                         print(f"Found mDNS service: {info.server.rstrip('.')} ({ip_addr}) - {type_}")
         except Exception as e:
-            print(f"Error getting service info: {e}")
+            # Only print unique errors
+            error_msg = str(e)
+            if error_msg not in self.errors:
+                self.errors.add(error_msg)
+                print(f"mDNS discovery error: {error_msg}")
 
     def update_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         self.add_service(zc, type_, name)
@@ -76,16 +81,21 @@ def get_manufacturer_from_mac(mac_addr: str) -> Optional[str]:
 
 def discover_mdns_hosts(scan_time=15) -> Dict[str, dict]:
     """
-    Enhanced mDNS discovery with multiple service types and longer timeout.
+    Enhanced mDNS discovery with better error handling
     """
     zeroconf = Zeroconf()
     listener = MDNSListener()
     
-    # Try to wake up iOS devices with a broadcast
-    try:
-        subprocess.run(["dns-sd", "-B", "_apple-mobdev2._tcp", "local."], timeout=2)
-    except:
-        pass
+    # Only try dns-sd on macOS
+    if platform.system() == 'Darwin':
+        try:
+            subprocess.run(["dns-sd", "-B", "_apple-mobdev2._tcp", "local."], 
+                         timeout=2, 
+                         capture_output=True)  # Capture output to reduce noise
+        except subprocess.TimeoutExpired:
+            pass  # This is expected
+        except Exception as e:
+            print(f"Warning: dns-sd command failed: {e}")
 
     service_types = [
         "_workstation._tcp.local.",
@@ -164,7 +174,7 @@ def enhance_device_info(ip_addr: str, mac_addr: str, mdns_info: dict, iface: str
     if manufacturer:
         return f"{manufacturer} device"
 
-    return "not detected"
+    return "Unknown device"
 
 def main():
     parser = argparse.ArgumentParser(
@@ -183,6 +193,11 @@ def main():
         type=int,
         default=12,
         help="Time in seconds to scan for mDNS services (default: 12)"
+    )
+    parser.add_argument(
+        "--no-arp",
+        action="store_true",
+        help="Skip ARP scanning (useful if you don't have promiscuous mode access)"
     )
     args = parser.parse_args()
 
@@ -213,26 +228,47 @@ def main():
     # Configure Scapy
     conf.iface = iface_to_use
 
-    # Check if running with root privileges
-    if os.geteuid() != 0:
-        print("\nError: This script requires root privileges to perform ARP scanning.")
-        print("Please run the script using sudo:")
-        print(f"sudo lsip {' '.join(sys.argv[1:])}")
-        sys.exit(1)
+    # Initialize empty result
+    result = []
 
-    # ARP scan with increased timeout
-    try:
-        print("Performing ARP scan...")
-        arp_req = ARP(pdst=net_range)
-        ether = Ether(dst="ff:ff:ff:ff:ff:ff")
-        result = srp(ether / arp_req, timeout=3, verbose=0)[0]
-    except Exception as e:
-        print(f"\nError performing ARP scan: {e}")
-        print("If you're already running with sudo, make sure you have permission to access the network interface.")
-        sys.exit(1)
+    # Only perform ARP scan if not disabled and we have root privileges
+    if not args.no_arp:
+        if os.geteuid() != 0:
+            print("\nError: ARP scanning requires root privileges.")
+            print("Please run with sudo or use --no-arp flag:")
+            print(f"sudo lsip {' '.join(sys.argv[1:])}")
+            print("Running with only mDNS discovery...\n")
+        else:
+            try:
+                print("Performing ARP scan...")
+                # Try without promiscuous mode first
+                conf.promisc = False
+                arp_req = ARP(pdst=net_range)
+                ether = Ether(dst="ff:ff:ff:ff:ff:ff")
+                result = srp(ether / arp_req, timeout=3, verbose=0)[0]
+            except Exception as e:
+                print(f"\nWarning: ARP scan failed: {e}")
+                print("Try running with --no-arp flag if you don't have permission for promiscuous mode.")
+                print("The script will still show mDNS discovered devices.\n")
 
     # Process results
     discovered_hosts = []
+    
+    # Add mDNS-discovered hosts even if ARP scan failed
+    for ip_addr, info in mdns_info.items():
+        if ip_addr.startswith("192.168."):
+            # We don't have MAC address for mDNS-only discoveries
+            mac_addr = "Unknown"
+            metadata = enhance_device_info(
+                ip_addr,
+                mac_addr,
+                info,
+                iface_to_use,
+                local_hostname
+            )
+            discovered_hosts.append((ip_addr, mac_addr, metadata))
+
+    # Add ARP-discovered hosts
     for sent, received in result:
         ip_addr = received.psrc
         mac_addr = received.hwsrc
@@ -247,11 +283,23 @@ def main():
             )
             discovered_hosts.append((ip_addr, mac_addr, metadata))
 
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_hosts = []
+    for host in discovered_hosts:
+        if host[0] not in seen:  # Use IP address as unique key
+            seen.add(host[0])
+            unique_hosts.append(host)
+
     # Print results
+    if not unique_hosts:
+        print("\nNo hosts discovered.")
+        return
+
     print("\nDiscovered hosts:\n")
     print(f"{'IP Address':<15}  {'MAC Address':<17}  {'Metadata'}")
     print("-" * 60)
-    for ip_addr, mac_addr, info in sorted(discovered_hosts):
+    for ip_addr, mac_addr, info in sorted(unique_hosts):
         print(f"{ip_addr:<15}  {mac_addr:<17}  {info}")
 
 if __name__ == "__main__":
