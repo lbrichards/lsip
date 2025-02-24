@@ -11,19 +11,43 @@ from typing import Dict, Optional, Tuple
 import platform
 
 import netifaces
-from scapy.all import ARP, Ether, srp, conf
+from scapy.all import ARP, Ether, srp, conf, TCP, IP, sr1
 from zeroconf import ServiceBrowser, Zeroconf, ServiceListener
 
-# Enhanced MAC address prefixes
+# Enhanced MAC address prefixes with specific Apple device types
 MAC_PREFIXES = {
+    # Network equipment
     '90:32:4b': 'RouterBoard',
     '90:09:d0': 'Synology',
-    'a8:8f:d9': 'Apple',
-    'ae:c4:35': 'Apple',
+    
+    # Apple devices (expanded)
+    'a8:8f:d9': 'Apple Mac',
+    'ae:c4:35': 'Apple iPhone',
     '48:5f:99': 'Google',
-    'b2:6a:53': 'Apple',
-    'ce:b5:f8': 'Apple',
-    'ee:38:c5': 'Apple',
+    'b2:6a:53': 'Apple MacBook',
+    'ce:b5:f8': 'Apple iMac',
+    'ee:38:c5': 'Apple iPad',
+    '04:15:52': 'Apple iPhone',
+    '04:26:65': 'Apple iPhone',
+    '14:99:e2': 'Apple iPhone',
+    '70:56:81': 'Apple iPhone',
+    '7c:50:49': 'Apple iPhone',
+    '78:ca:39': 'Apple iPhone',
+    'ac:bc:32': 'Apple iPhone',
+    '68:d9:3c': 'Apple iPhone',
+    'dc:2b:2a': 'Apple iPad',
+    '00:88:65': 'Apple Mac Mini',
+    '00:3e:e1': 'Apple Mac Pro',
+}
+
+# iOS/iPadOS-specific ports
+IOS_PORTS = {
+    49152: "iOS device",  # Common iOS/iPadOS service port
+    62078: "iOS device",  # iPhone/iPad sync port
+    5900: "Apple Screen Sharing",
+    3689: "iTunes sharing",
+    548: "Apple Filing Protocol",
+    88: "Kerberos",
 }
 
 class MDNSListener(ServiceListener):
@@ -47,7 +71,8 @@ class MDNSListener(ServiceListener):
                             'name': server_name,
                             'type': type_,
                             'properties': info.properties,
-                            'is_local': server_name == self.local_hostname
+                            'is_local': server_name == self.local_hostname,
+                            'is_ios': any(ios_type in type_ for ios_type in ["_apple-mobdev2._tcp.local.", "_apple-pairable._tcp.local."])
                         }
                         print(f"Found mDNS service: {server_name} ({ip_addr}) - {type_}")
         except Exception as e:
@@ -60,6 +85,7 @@ class MDNSListener(ServiceListener):
 
     def remove_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         pass
+
 
 def get_local_hostname() -> str:
     """Get the local hostname with .local suffix if not present"""
@@ -83,6 +109,45 @@ def get_manufacturer_from_mac(mac_addr: str) -> Optional[str]:
     mac_prefix = mac_addr[:8].lower()
     return MAC_PREFIXES.get(mac_prefix)
 
+def get_apple_device_type(ip_addr: str, service_types: list = None) -> Optional[str]:
+    """
+    Determine specific Apple device type using multiple detection methods
+    """
+    device_type = None
+    
+    # Check characteristic ports
+    for port in IOS_PORTS.keys():
+        try:
+            packet = IP(dst=ip_addr)/TCP(dport=port, flags="S")
+            response = sr1(packet, timeout=1, verbose=0)
+            if response and response.haslayer(TCP):
+                tcp_flags = response[TCP].flags
+                if tcp_flags == 0x12:  # SYN-ACK
+                    if port in [49152, 62078]:
+                        return "iPhone"  # These ports are very characteristic of iPhones
+                    device_type = "iOS device"  # Less specific if other ports
+        except Exception:
+            continue
+
+    # Check for specific service types
+    if service_types:
+        if "_iphone" in str(service_types).lower():
+            return "iPhone"
+        if "_ipad" in str(service_types).lower():
+            return "iPad"
+        if "_macbook" in str(service_types).lower():
+            return "MacBook"
+        if "_imac" in str(service_types).lower():
+            return "iMac"
+        if "_mac-mini" in str(service_types).lower() or "_macmini" in str(service_types).lower():
+            return "Mac Mini"
+        if "_apple-tv" in str(service_types).lower():
+            return "Apple TV"
+        if "_homepod" in str(service_types).lower():
+            return "HomePod"
+
+    return device_type
+
 def discover_mdns_hosts(scan_time=15) -> Dict[str, dict]:
     """Enhanced mDNS discovery with better error handling"""
     zeroconf = Zeroconf()
@@ -103,6 +168,7 @@ def discover_mdns_hosts(scan_time=15) -> Dict[str, dict]:
         "_workstation._tcp.local.",
         "_companion-link._tcp.local.",
         "_apple-mobdev2._tcp.local.",
+        "_apple-pairable._tcp.local.",
         "_googlecast._tcp.local.",
         "_androidtvremote._tcp.local.",
         "_raop._tcp.local.",
@@ -139,7 +205,7 @@ def discover_mdns_hosts(scan_time=15) -> Dict[str, dict]:
     return listener.ip_to_info
 
 def enhance_device_info(ip_addr: str, mac_addr: str, mdns_info: dict, iface: str, local_hostname: str) -> str:
-    """Enhanced device identification with better local device handling"""
+    """Enhanced device identification with better Apple device detection"""
     # Normalize hostnames for comparison
     local_hostname = local_hostname.lower()
     
@@ -151,7 +217,7 @@ def enhance_device_info(ip_addr: str, mac_addr: str, mdns_info: dict, iface: str
     except Exception:
         pass
 
-    # Check if this is the local device using only reliable methods
+    # Check if this is the local device
     is_local = any([
         identify_local_interface(ip_addr, iface),
         mdns_info and mdns_info.get('is_local', False),
@@ -161,6 +227,25 @@ def enhance_device_info(ip_addr: str, mac_addr: str, mdns_info: dict, iface: str
     if is_local:
         return f"Local Host ({local_hostname})"
 
+    # Enhanced Apple device detection
+    if mac_addr != "Unknown" and any(prefix in mac_addr.lower() for prefix in MAC_PREFIXES if 'Apple' in MAC_PREFIXES[prefix]):
+        # Try to get specific Apple device type
+        service_types = [mdns_info.get('type')] if mdns_info else None
+        apple_device_type = get_apple_device_type(ip_addr, service_types)
+        
+        if apple_device_type:
+            if mdns_info and mdns_info.get('name'):
+                return f"{apple_device_type} ({mdns_info['name']})"
+            return apple_device_type
+        
+        # Fallback to MAC prefix identification
+        manufacturer = get_manufacturer_from_mac(mac_addr)
+        if manufacturer:
+            if mdns_info and mdns_info.get('name'):
+                return f"{manufacturer} ({mdns_info['name']})"
+            return manufacturer
+
+    # Handle other device types
     if mdns_info:
         device_name = mdns_info.get('name', '').lower()
         service_type = mdns_info.get('type', '').lower()
@@ -176,18 +261,9 @@ def enhance_device_info(ip_addr: str, mac_addr: str, mdns_info: dict, iface: str
         elif 'ds423' in device_name:
             return "DS423.local"
             
-        elif 'macbook air' in device_name or 'mba' in device_name:
-            return f"MacBook Air ({device_name})"
-            
-        elif 'macbook' in device_name:
-            return f"MacBook ({device_name})"
-            
-        elif 'imac' in device_name:
-            return f"iMac ({device_name})"
-
         return device_name
 
-    # Fallback to MAC prefix identification
+    # Fallback to basic MAC prefix identification
     if mac_addr != "Unknown":
         manufacturer = get_manufacturer_from_mac(mac_addr)
         if manufacturer:
@@ -220,7 +296,8 @@ def main():
     )
     args = parser.parse_args()
 
-    # Get local hostname
+
+# Get local hostname
     local_hostname = get_local_hostname()
     print(f"Local hostname: {local_hostname}")
 
@@ -355,3 +432,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
+
+
+
+
+
