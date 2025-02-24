@@ -1,0 +1,9 @@
+README.md
+main.py
+pyproject.toml
+lsip.egg-info/PKG-INFO
+lsip.egg-info/SOURCES.txt
+lsip.egg-info/dependency_links.txt
+lsip.egg-info/entry_points.txt
+lsip.egg-info/requires.txt
+lsip.egg-info/top_level.txt

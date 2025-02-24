@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lsip"
+version = "0.1.0"
+description = "A small Python script that scans our local network for IPv4 addresses and collects extra metadata."
+readme = "README.md"
+requires-python = ">=3.6"
+license = { text = "MIT" }
+
+keywords = ["network", "scapy", "arp", "discovery", "zeroconf", "mdns"]
+dependencies = [
+  "scapy>=2.4.0",
+  "netifaces",
+  "zeroconf"
+]
+
+[project.scripts]
+lsip = "main:main"
