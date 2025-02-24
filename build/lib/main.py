@@ -151,11 +151,11 @@ def enhance_device_info(ip_addr: str, mac_addr: str, mdns_info: dict, iface: str
     except Exception:
         pass
 
-    # Check if this is the local device using multiple methods
+    # Check if this is the local device using only reliable methods
     is_local = any([
         identify_local_interface(ip_addr, iface),
         mdns_info and mdns_info.get('is_local', False),
-        mac_addr.lower() in ['ae:c4:35:8c:c8:f4', 'b2:6a:53:c6:ea:18']  # Known local MACs
+        mdns_info and mdns_info.get('name', '').lower() == local_hostname
     ])
 
     if is_local:
@@ -177,13 +177,9 @@ def enhance_device_info(ip_addr: str, mac_addr: str, mdns_info: dict, iface: str
             return "DS423.local"
             
         elif 'macbook air' in device_name or 'mba' in device_name:
-            if is_local:
-                return f"Local Host ({device_name})"
             return f"MacBook Air ({device_name})"
             
         elif 'macbook' in device_name:
-            if is_local:
-                return f"Local Host ({device_name})"
             return f"MacBook ({device_name})"
             
         elif 'imac' in device_name:
