@@ -14,6 +14,17 @@ A small Python script that scans our local network for IPv4 addresses starting w
 `pip install -r requirements.txt`
 Or, if we’re installing Scapy directly:
 `pip install scapy`
+### Installing with pipx
+If we’d like to install and run `lsip` globally without typing `python` each time, we can use [pipx](https://pypa.github.io/pipx/). Make sure we have pipx installed:
+`python -m pip install –user pipx
+python -m pipx ensurepath`
+Then install `lsip` via pipx (from the cloned local folder):
+cd lsip
+pipx install .
+- This will build and install `lsip` as a globally available command.
+- From now on, we can just run the `lsip` command anywhere.
+- (If not installed via pipx, we can still run:)
+  `python lsip.py`
 ## Usage
 1. **Run the Script**
 python lsip.py
