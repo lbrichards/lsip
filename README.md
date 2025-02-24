@@ -39,5 +39,5 @@ python lsip.py
 - Feel free to open an issue or submit a pull request.
 
 ## License
-This project is distributed under the MIT License (or whichever license we choose).
+This project is distributed under the MIT License.
    
